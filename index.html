@@ -73,7 +73,6 @@
                 iniciarInterfaz();
             } else {
                 try {
-                    // Llamada al archivo JSON que acabas de subir
                     const respuesta = await fetch('vacantes.json');
                     if (!respuesta.ok) throw new Error("No se pudo cargar el archivo");
                     
@@ -228,12 +227,27 @@
         }
 
         function syncDesdeTabla() {
+            // 1. Leemos exactamente cómo has dejado la tabla al soltar el dedo
             const trs = Array.from(document.getElementById('tabla-cuerpo').children);
             const nuevoOrden = [];
+            
             trs.forEach(tr => {
-                nuevoOrden.push(statePlazas.find(p => p.fila === parseInt(tr.dataset.fila)));
+                const plaza = statePlazas.find(p => p.fila === parseInt(tr.dataset.fila));
+                if (plaza) nuevoOrden.push(plaza);
             });
+            
             statePlazas = nuevoOrden;
+            
+            // 2. CORRECCIÓN CLAVE: Asignamos el nuevo número a las favoritas 
+            // BASÁNDONOS en ese orden visual ANTES de llamar a la función que lo reordena
+            let counter = 1;
+            statePlazas.forEach(p => {
+                if (p.estado === 'favorita') {
+                    p.eleccion = counter++;
+                }
+            });
+
+            // 3. Ahora sí agrupamos y redibujamos con los números definitivos
             ordenarEstadoGlobal(); 
             recalcularYSincronizar();
             renderizarTabla(); 
