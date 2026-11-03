@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ranking Plazas</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
+    <style>
+        .ghost { opacity: 0.4; background-color: #e2e8f0; }
+        .drag-handle { touch-action: pan-y; }
+        @media print {
+            .no-print { display: none !important; }
+            body { background: white; padding: 0; }
+            #vista-resumen { box-shadow: none; border: none; }
+        }
+    </style>
+</head>
+<body class="bg-slate-100 p-2 md:p-6 font-sans">
+    <div class="max-w-5xl mx-auto space-y-4">
+        
+        <div class="flex justify-between items-center bg-white p-4 rounded-xl shadow-sm no-print">
+            <h1 class="text-xl md:text-2xl font-bold text-slate-800">Ranking Notarías</h1>
+            <div class="flex gap-2">
+                <span id="estado" class="text-sm font-semibold text-blue-600 bg-blue-50 px-3 py-2 rounded-lg border border-blue-200">Cargando datos...</span>
+                <button onclick="exportarCSV()" class="text-sm px-4 py-2 font-bold bg-blue-600 text-white rounded-lg shadow hover:bg-blue-700 transition">📥 Descargar CSV</button>
+            </div>
+        </div>
+
+        <div id="vista-resumen" class="bg-white rounded-xl shadow-sm border-t-4 border-slate-700 overflow-hidden pb-10">
+            
+            <div class="p-4 bg-slate-50 border-b flex flex-col sm:flex-row justify-between items-center gap-4 no-print">
+                <div class="flex flex-col sm:flex-row items-center gap-2 w-full md:w-auto">
+                    <select id="filtroCCAA" onchange="filtrarTabla()" class="w-full sm:w-auto p-2 text-sm border rounded bg-white text-slate-700 font-medium md:w-64">
+                        <option value="todas">Todas las CCAA</option>
+                    </select>
+                    <select id="filtroCategoria" onchange="filtrarTabla()" class="w-full sm:w-auto p-2 text-sm border rounded bg-white text-slate-700 font-medium md:w-32">
+                        <option value="todas">Todas las Cat.</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="overflow-x-auto">
+                <table class="w-full text-sm text-left">
+                    <thead class="bg-slate-100 text-slate-600 border-b">
+                        <tr>
+                            <th class="p-3 text-center w-16 font-bold" title="Arrastra desde aquí">Nº / ⋮⋮</th>
+                            <th class="p-3 font-bold">Vacante</th>
+                            <th class="p-3 font-bold">Provincia</th>
+                            <th class="p-3 hidden sm:table-cell font-bold">CCAA</th>
+                            <th class="p-3 text-center font-bold">Cat.</th>
+                            <th class="p-3 text-center font-bold no-print w-24">Acciones</th>
+                        </tr>
+                    </thead>
+                    <tbody id="tabla-cuerpo" class="divide-y divide-slate-200">
+                        <!-- Se llena mediante JSON -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let statePlazas = [];
+        let filtroLleno = false;
+        let sortablesIniciados = false;
+
+        window.onload = async () => {
+            const guardado = localStorage.getItem('rankingPaulaData');
+            
+            if (guardado) {
+                statePlazas = JSON.parse(guardado);
+                iniciarInterfaz();
+            } else {
+                try {
+                    // Llamada al archivo JSON que acabas de subir
+                    const respuesta = await fetch('vacantes.json');
+                    if (!respuesta.ok) throw new Error("No se pudo cargar el archivo");
+                    
+                    const datosIniciales = await respuesta.json();
+                    
+                    statePlazas = datosIniciales.map(p => ({
+                        ...p,
+                        estado: p.eleccion === '-' ? 'descartada' : (p.eleccion > 0 ? 'favorita' : 'pendiente'),
+                        eleccion: p.eleccion > 0 ? parseInt(p.eleccion) : p.eleccion
+                    }));
+                    
+                    iniciarInterfaz();
+                } catch (error) {
+                    const btn = document.getElementById('estado');
+                    btn.innerText = "❌ Error al leer vacantes.json";
+                    btn.className = "text-sm font-semibold text-red-700 bg-red-50 px-3 py-2 rounded-lg border border-red-200";
+                    alert("Fallo al leer vacantes.json. Comprueba que está subido al repositorio y sin errores de formato.");
+                }
+            }
+        };
+
+        function iniciarInterfaz() {
+            const ccaas = new Set();
+            const categorias = new Set();
+            statePlazas.forEach(p => { 
+                if (p.ccaa) ccaas.add(p.ccaa); 
+                if (p.categoria) categorias.add(p.categoria);
+            });
+            
+            llenarFiltros(ccaas, categorias);
+            ordenarEstadoGlobal();
+            renderizarTabla();
+            iniciarSortables();
+            
+            const btn = document.getElementById('estado');
+            btn.innerText = "✓ Lista cargada";
+            btn.className = "text-sm font-semibold text-green-700 bg-green-50 px-3 py-2 rounded-lg border border-green-200";
+        }
+
+        function ordenarEstadoGlobal() {
+            statePlazas.sort((a, b) => {
+                const peso = { 'favorita': 1, 'pendiente': 2, 'descartada': 3 };
+                if (peso[a.estado] !== peso[b.estado]) return peso[a.estado] - peso[b.estado];
+                if (a.estado === 'favorita') return a.eleccion - b.eleccion;
+                return a.fila - b.fila; 
+            });
+        }
+
+        function cambiarEstado(filaId, nuevoEstado) {
+            const p = statePlazas.find(x => x.fila === filaId);
+            
+            if (nuevoEstado === 'favorita' && p.estado !== 'favorita') {
+                const favs = statePlazas.filter(x => x.estado === 'favorita');
+                let maxEleccion = 0;
+                if (favs.length > 0) {
+                    maxEleccion = Math.max(...favs.map(x => typeof x.eleccion === 'number' ? x.eleccion : 0));
+                }
+                p.eleccion = maxEleccion + 1;
+            }
+
+            p.estado = nuevoEstado;
+            if (nuevoEstado === 'descartada') p.eleccion = '-';
+            if (nuevoEstado === 'pendiente') p.eleccion = '';
+
+            ordenarEstadoGlobal();
+            recalcularYSincronizar();
+            renderizarTabla();
+            filtrarTabla();
+        }
+
+        function llenarFiltros(ccaas, categorias) {
+            if (filtroLleno) return;
+            const filtroC = document.getElementById('filtroCCAA');
+            Array.from(ccaas).sort().forEach(c => {
+                const opt = document.createElement('option');
+                opt.value = c; opt.innerText = c;
+                filtroC.appendChild(opt);
+            });
+            
+            const filtroCat = document.getElementById('filtroCategoria');
+            Array.from(categorias).sort().forEach(c => {
+                const opt = document.createElement('option');
+                opt.value = c; opt.innerText = c;
+                filtroCat.appendChild(opt);
+            });
+            filtroLleno = true;
+        }
+
+        function filtrarTabla() {
+            const ccaa = document.getElementById('filtroCCAA').value;
+            const cat = document.getElementById('filtroCategoria').value;
+            const filas = document.getElementById('tabla-cuerpo').children;
+            
+            for (let tr of filas) {
+                const matchC = (ccaa === 'todas' || tr.dataset.ccaa === ccaa);
+                const matchCat = (cat === 'todas' || tr.dataset.categoria === cat);
+                tr.style.display = (matchC && matchCat) ? '' : 'none';
+            }
+        }
+
+        function renderizarTabla() {
+            const tbody = document.getElementById('tabla-cuerpo');
+            tbody.innerHTML = '';
+            
+            statePlazas.forEach(p => {
+                const tr = document.createElement('tr');
+                tr.dataset.fila = p.fila;
+                tr.dataset.ccaa = p.ccaa;
+                tr.dataset.categoria = p.categoria;
+                
+                const colorFila = p.estado === 'favorita' ? 'bg-green-50 text-green-900 font-medium' :
+                                  p.estado === 'descartada' ? 'bg-red-50 text-red-700' : 
+                                  'bg-white text-slate-700';
+                
+                tr.className = `${colorFila} hover:bg-slate-100 transition-colors group`;
+                const iconoNum = p.estado === 'favorita' ? p.eleccion : (p.estado === 'descartada' ? '-' : '⋮⋮');
+                
+                let botones = '';
+                if (p.estado === 'pendiente') {
+                    botones = `
+                        <button onclick="cambiarEstado(${p.fila}, 'favorita')" class="px-2 py-1 bg-green-100 text-green-700 font-bold rounded shadow-sm hover:bg-green-200" title="Hacer favorita">⭐</button>
+                        <button onclick="cambiarEstado(${p.fila}, 'descartada')" class="px-2 py-1 bg-red-100 text-red-700 font-bold rounded shadow-sm hover:bg-red-200" title="Descartar">❌</button>
+                    `;
+                } else if (p.estado === 'descartada') {
+                    botones = `<button onclick="cambiarEstado(${p.fila}, 'pendiente')" class="px-2 py-1 bg-slate-200 text-slate-700 font-bold rounded shadow-sm hover:bg-slate-300" title="Volver a pendientes">🔄</button>`;
+                } else {
+                    botones = `<button onclick="cambiarEstado(${p.fila}, 'pendiente')" class="px-2 py-1 bg-slate-200 text-slate-700 font-bold rounded shadow-sm hover:bg-slate-300" title="Quitar de favoritas">🔄</button>`;
+                }
+
+                tr.innerHTML = `
+                    <td class="p-3 text-center font-bold text-lg drag-handle cursor-grab active:cursor-grabbing opacity-70 group-hover:opacity-100">${iconoNum}</td>
+                    <td class="p-3">${p.vacante}</td>
+                    <td class="p-3">${p.provincia}</td>
+                    <td class="p-3 hidden sm:table-cell">${p.ccaa}</td>
+                    <td class="p-3 text-center">${p.categoria}</td>
+                    <td class="p-3 text-center no-print flex gap-1 justify-center align-middle">${botones}</td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        function iniciarSortables() {
+            if (sortablesIniciados) return;
+            new Sortable(document.getElementById('tabla-cuerpo'), {
+                animation: 150, 
+                ghostClass: 'ghost', 
+                handle: '.drag-handle', 
+                fallbackTolerance: 3, 
+                onEnd: syncDesdeTabla
+            });
+            sortablesIniciados = true;
+        }
+
+        function syncDesdeTabla() {
+            const trs = Array.from(document.getElementById('tabla-cuerpo').children);
+            const nuevoOrden = [];
+            trs.forEach(tr => {
+                nuevoOrden.push(statePlazas.find(p => p.fila === parseInt(tr.dataset.fila)));
+            });
+            statePlazas = nuevoOrden;
+            ordenarEstadoGlobal(); 
+            recalcularYSincronizar();
+            renderizarTabla(); 
+            filtrarTabla();
+        }
+
+        function recalcularYSincronizar() {
+            let counter = 1;
+            statePlazas.forEach(p => {
+                if (p.estado === 'favorita') p.eleccion = counter++;
+                else if (p.estado === 'descartada') p.eleccion = '-';
+                else p.eleccion = '';
+            });
+
+            localStorage.setItem('rankingPaulaData', JSON.stringify(statePlazas));
+            
+            const btn = document.getElementById('estado');
+            btn.innerText = "✓ Guardado";
+            setTimeout(() => { btn.innerText = "✓ Lista cargada"; }, 1500);
+        }
+
+        function exportarCSV() {
+            const cabecera = "Eleccion,Vacante,Provincia,CCAA,Categoria\n";
+            let lineas = [];
+            
+            const exportData = [...statePlazas].sort((a, b) => {
+                const peso = { 'favorita': 1, 'pendiente': 2, 'descartada': 3 };
+                if (peso[a.estado] !== peso[b.estado]) return peso[a.estado] - peso[b.estado];
+                if (a.estado === 'favorita') return a.eleccion - b.eleccion;
+                return a.fila - b.fila; 
+            });
+
+            exportData.forEach(p => {
+                const eleccionVal = p.estado === 'pendiente' ? '' : p.eleccion;
+                lineas.push(`"${eleccionVal}","${p.vacante}","${p.provincia}","${p.ccaa}","${p.categoria}"`);
+            });
+
+            const csvContent = "\uFEFF" + cabecera + lineas.join("\n");
+            const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+            const link = document.createElement("a");
+            const url = URL.createObjectURL(blob);
+            link.setAttribute("href", url);
+            link.setAttribute("download", "Ranking_Paula.csv");
+            link.style.visibility = 'hidden';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        }
+    </script>
+</body>
+</html>
